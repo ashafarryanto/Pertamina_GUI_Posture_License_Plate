@@ -1,8 +1,8 @@
 # Monitoring Plat & Postur — Pertamina Patra Niaga
 
-Aplikasi desktop (PyQt5) untuk memantau kendaraan yang masuk lewat **deteksi
-plat nomor otomatis (ANPR)** dan **deteksi postur + pemasangan tag
-keselamatan** secara realtime, memakai YOLOv8 + OpenCV.
+Aplikasi desktop (PyQt5) untuk memantau kendaraan yang masuk lewat
+**deteksi plat nomor otomatis (ANPR)** dan **deteksi postur + pemasangan
+tag keselamatan** secara realtime, memakai YOLOv8 + OpenCV.
 
 <p align="center">
   <img src="assets/app_icon.png" width="96" alt="App icon">
@@ -24,19 +24,24 @@ keselamatan** secara realtime, memakai YOLOv8 + OpenCV.
   melacak durasi tag keselamatan terpasang — otomatis meng-capture foto
   begitu proses pemasangan selesai.
 
+- **Indikator FPS realtime** di kedua kamera (ANPR & Postur), supaya
+  gampang lihat apakah model masih jalan lancar di perangkat yang dipakai.
+
 - **UI Desktop 2 Halaman**
   - **Verifikasi** — video live kamera ANPR, auto-isi nomor plat, koreksi
     manual kalau OCR salah baca.
   - **Monitoring** — video live kamera deteksi postur, daftar tag yang
-    tertangkap (bisa di-preview & dihapus dengan renumbering otomatis).
+    tertangkap (bisa di-preview ukuran penuh & dihapus dengan renumbering
+    otomatis), nomor plat bisa direvisi lagi sebelum diproses lebih lanjut.
 
 - **Responsif** — layout reflow, bisa di-resize/maximize/fullscreen bebas,
   mendukung mode kios (`--kiosk`) untuk layar kecil (mis. Jetson Nano +
   panel 7").
 
-- **Ringan** — cuma 1 model AI yang aktif dalam satu waktu (ANPR di
-  halaman Verifikasi, Deteksi Postur di halaman Monitoring), bukan
-  dua-duanya sekaligus.
+- **Ringan** — cuma 1 model AI yang aktif dalam satu waktu. ANPR otomatis
+  berhenti begitu plat sudah diproses (tombol "Verifikasi"/"Monitoring" di
+  halaman Verifikasi), baru setelah itu deteksi postur mulai jalan —
+  tidak pernah dua-duanya menyala bersamaan.
 
 ---
 
@@ -47,7 +52,7 @@ pertamina_gui/
 ├── main.py                     # entry point aplikasi
 ├── assets/                     # logo, ikon, background (hasil export Figma)
 │   ├── style.qss
-│   ├── app_icon.ico / .png
+│   ├── app_icon.ico / .png     # ikon title bar & taskbar aplikasi
 │   └── *.png
 │
 ├── widgets/                    # kode UI (PyQt5)
@@ -58,16 +63,20 @@ pertamina_gui/
 │
 └── detection/                  # inti sistem deteksi
     ├── anpr/
-    │   ├── anpr_main.py        # konfigurasi & pipeline ANPR
+    │   ├── anpr_main.py        # konfigurasi & pipeline ANPR (SOURCE, model, dst)
     │   ├── plate_utils.py      # normalisasi teks plat Indonesia
-    │   ├── video_source.py     # wrapper VideoCapture (file & live-camera)
-    │   └── model.pt            # (taruh sendiri, tidak ikut di repo)
+    │   └── video_source.py     # wrapper VideoCapture (file & live-camera)
     ├── pose/
-    │   ├── v6.py                # konfigurasi & tracking tag/postur
+    │   ├── v6.py                # konfigurasi & tracking tag/postur (SOURCE, model, dst)
     │   └── posture_detect.py    # klasifikasi postur dari keypoint
     └── model/
-        └── yolov8n-pose.pt      # (taruh sendiri, tidak ikut di repo)
+        ├── model.pt              # (taruh sendiri, tidak ikut di repo)
+        └── yolov8n-pose.pt       # (taruh sendiri, tidak ikut di repo)
 ```
+
+> Model (`model.pt`, `yolov8*-pose.pt`) dan video sample tidak disertakan
+> di repo ini (ukurannya besar, lihat `.gitignore`) — lihat bagian
+> **Instalasi** di bawah.
 
 ---
 
@@ -110,7 +119,7 @@ pip install PyQt5 opencv-python ultralytics torch easyocr numpy
    | File | Lokasi |
    |---|---|
    | Model deteksi plat (`model.pt`) | `detection/model/model.pt` |
-   | Model pose (`yolov8n-pose.pt` / `yolov8s-pose.pt` / `yolov8m-pose.pt`) | `detection/model/` |
+   | Model pose (`yolov8n-pose.pt` / `yolov8s-pose.pt` / dst.) | `detection/model/` |
    | Video uji ANPR (opsional, kalau belum pakai kamera asli) | `detection/anpr/` |
    | Video uji Postur (opsional) | `detection/pose/` |
 
@@ -152,18 +161,23 @@ Tekan `Esc` untuk keluar dari mode kios saat testing.
 ## 🧭 Alur Penggunaan
 
 1. Aplikasi terbuka di halaman **Verifikasi** — kamera ANPR otomatis
-   jalan, kolom nomor plat terisi otomatis dari hasil OCR.
-2. Operator boleh mengoreksi manual kalau bacaan OCR salah, lalu tekan
-   **Verifikasi** — foto plat disimpan, ANPR berhenti (hemat resource),
-   dan aplikasi pindah ke halaman **Monitoring** sambil menjalankan
-   deteksi postur.
-3. Di halaman Monitoring, setiap tag keselamatan yang selesai terpasang
-   otomatis masuk ke daftar (foto, waktu, durasi). Tag bisa di-klik untuk
-   preview foto ukuran penuh, atau dihapus kalau salah tangkap.
-4. Tombol **Kembali** membawa balik ke halaman Verifikasi tanpa
-   menghentikan proses deteksi postur di background.
-5. Tombol **Reset** menghentikan semua proses dan memulai ulang dari nol
-   untuk kendaraan berikutnya.
+   jalan, kolom nomor plat terisi otomatis dari hasil OCR. Indikator
+   **LIVE** & FPS muncul begitu video benar-benar mengalir.
+2. Operator boleh mengoreksi manual kalau bacaan OCR salah.
+3. Tekan **Verifikasi** → foto plat disimpan, ANPR **berhenti**, aplikasi
+   pindah ke halaman **Monitoring** dan deteksi postur mulai jalan.
+   Tekan **Monitoring** (tanpa Verifikasi) → cuma pindah halaman, ANPR
+   tetap jalan di background, deteksi postur belum dimulai.
+4. Di halaman Monitoring, setiap tag keselamatan yang selesai terpasang
+   otomatis masuk ke daftar (foto, waktu, durasi) — bisa diklik untuk
+   preview foto ukuran penuh (bisa di-fullscreen), atau dihapus kalau
+   salah tangkap (nomor tag sisanya otomatis urut ulang). Nomor plat
+   juga masih bisa direvisi di halaman ini.
+5. Tombol **Kembali** membawa balik ke halaman Verifikasi TANPA
+   menghentikan deteksi postur di background (ANPR tidak otomatis
+   menyala lagi — perlu Reset kalau mau verifikasi plat baru).
+6. Tombol **Reset** menghentikan semua proses deteksi dan memulai ulang
+   dari nol untuk kendaraan berikutnya.
 
 ---
 
@@ -171,12 +185,14 @@ Tekan `Esc` untuk keluar dari mode kios saat testing.
 
 | Parameter | Lokasi | Fungsi |
 |---|---|---|
+| `SOURCE` | `anpr_main.py` / `v6.py` | Sumber video (file / webcam / RTSP) |
 | `CONF_THRESHOLD` | `anpr_main.py` | Ambang keyakinan deteksi plat |
 | `OCR_EVERY_N_FRAME` | `anpr_main.py` | OCR dijalankan tiap N frame (biar tetap realtime) |
 | `CONF_THRESHOLD_DETECT` | `v6.py` | Ambang keyakinan deteksi orang |
 | `ALERT_SECONDS` | `v6.py` | Lama tag harus "diam" sebelum dianggap selesai terpasang |
 | `RATIO_JONGKOK` / `RATIO_MENUNDUK` | `v6.py` | Kalibrasi rasio tinggi tubuh untuk klasifikasi postur |
 | `MODEL_PATH` | `anpr_main.py` / `v6.py` | Lokasi file model `.pt` |
+| `ENABLE_SHADOWS` | `widgets/design_tokens.py` | Matikan efek shadow UI kalau lag di perangkat lemah |
 
 ---
 
