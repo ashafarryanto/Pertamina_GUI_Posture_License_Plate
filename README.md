@@ -74,9 +74,7 @@ pertamina_gui/
         └── yolov8n-pose.pt       # (taruh sendiri, tidak ikut di repo)
 ```
 
-> Model (`model.pt`, `yolov8*-pose.pt`) dan video sample tidak disertakan
-> di repo ini (ukurannya besar, lihat `.gitignore`) — lihat bagian
-> **Instalasi** di bawah.
+
 
 ---
 
