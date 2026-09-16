@@ -1,39 +1,44 @@
 """
 db_client.py
 
-Koneksi database untuk menyimpan hasil verifikasi plat + semua foto tag
-yang tertangkap -- GAMBARNYA DISIMPAN LANGSUNG di database (bukan cuma
-path file). Dipanggil dari main.py setiap kali tombol "Verifikasi" di
+Kirim hasil verifikasi plat + semua foto tag yang tertangkap ke backend
+penyimpanan -- dipanggil dari main.py setiap kali tombol "Verifikasi" di
 halaman Monitoring diklik.
 
-MENDUKUNG 3 BACKEND (atur di widgets/db_config.py, TIDAK perlu ubah
-file ini sama sekali kalau pindah database):
-    - MySQL / MariaDB      (mis. XAMPP)   -> driver: pymysql
-    - Microsoft SQL Server (on-premise)   -> driver: pyodbc
-    - Azure SQL Database   (cloud)        -> driver: pyodbc
+MENDUKUNG 4 BACKEND (atur di widgets/db_config.py, TIDAK perlu ubah
+file ini sama sekali kalau pindah backend):
+    - REST API              (backend tim lain, mis. .NET) -> library: requests
+    - MySQL / MariaDB       (mis. XAMPP)   -> driver: pymysql
+    - Microsoft SQL Server  (on-premise)   -> driver: pyodbc
+    - Azure SQL Database    (cloud)        -> driver: pyodbc
 
 SETUP AWAL:
     1. Tentukan DB_BACKEND di widgets/db_config.py.
-    2. Install driver yang sesuai:
+    2. Install library/driver yang sesuai:
+           REST API:   pip install requests
            MySQL:      pip install pymysql
            SQL Server / Azure SQL:  pip install pyodbc
                         (+ install "ODBC Driver 17/18 for SQL Server"
                         dari Microsoft -- ini driver sistem, bukan pip)
-    3. Buat database & tabelnya:
+    3. Khusus mysql/sqlserver/azure_sql -- buat database & tabelnya:
            MySQL:      jalankan db/schema.sql
            SQL Server / Azure SQL:  jalankan db/schema_sqlserver.sql
-    4. Isi kredensial koneksi di widgets/db_config.py.
+       (REST API tidak perlu ini -- database dikelola oleh tim backend)
+    4. Isi kredensial/URL di widgets/db_config.py.
 
-CATATAN UKURAN DATA: karena gambar disimpan LANGSUNG (bukan path), kalau
-upload gagal dengan error semacam "packet too large" / "MySQL server has
-gone away" (MySQL) atau timeout (SQL Server/Azure), biasanya soal batas
-ukuran paket di server -- lihat catatan di db/schema.sql & db_config.py.
+CATATAN UKURAN DATA (khusus mysql/sqlserver/azure_sql, gambar disimpan
+LANGSUNG bukan path): kalau upload gagal dengan error semacam
+"packet too large" / "MySQL server has gone away" atau timeout, biasanya
+soal batas ukuran paket di server -- lihat catatan di db/schema.sql &
+db_config.py. Untuk REST API, batas ukurannya diatur oleh tim backend
+(saat ini: JPEG saja, maksimal 3MB per gambar).
 """
+import json
 import os
 from datetime import datetime
 
 from widgets.db_config import (
-    DB_BACKEND, MYSQL_CONFIG, SQLSERVER_CONFIG, AZURE_SQL_CONFIG,
+    DB_BACKEND, MYSQL_CONFIG, SQLSERVER_CONFIG, AZURE_SQL_CONFIG, REST_API_CONFIG,
 )
 
 try:
@@ -155,12 +160,18 @@ def _read_image_bytes(path):
         return None
 
 
-def _bake_overlay_and_encode(path, lines: list):
+def _bake_overlay_and_encode(path, lines: list, max_dimension=None, jpeg_quality=90):
     """
     Baca 1 file gambar dari disk, "cap" teks info (Plat/Tag/Waktu/Durasi)
     PERMANEN ke pikselnya pakai data FINAL (nilai plat terkoreksi
     terakhir, dsb -- ini dipanggil pas upload, setelah semua koreksi
     selesai), lalu kembalikan sebagai bytes JPEG.
+
+    max_dimension : kalau diisi (mis. 1280), gambar di-resize dulu supaya
+                    sisi terpanjangnya tidak lebih dari itu -- mengurangi
+                    ukuran file signifikan tanpa gambar jadi terlalu kecil
+                    buat dibaca. None = tidak di-resize (ukuran asli).
+    jpeg_quality   : 0-100, makin kecil makin terkompresi/makin kecil filenya.
 
     Kalau OpenCV tidak terinstall atau file gagal dibaca/di-decode,
     otomatis fallback ke file mentah tanpa overlay (upload tetap jalan).
@@ -177,6 +188,13 @@ def _bake_overlay_and_encode(path, lines: list):
         print(f"[WARN] Gagal decode gambar '{path}', upload tanpa overlay.")
         return _read_image_bytes(path)
 
+    if max_dimension:
+        h, w = img.shape[:2]
+        longest = max(h, w)
+        if longest > max_dimension:
+            scale = max_dimension / longest
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
     box_h = 20 + 26 * len(lines)
     overlay = img.copy()
     cv2.rectangle(overlay, (10, 10), (370, box_h), (0, 0, 0), -1)
@@ -187,11 +205,130 @@ def _bake_overlay_and_encode(path, lines: list):
                     (0, 255, 255), 2, cv2.LINE_AA)
         y += 26
 
-    ok, buf = cv2.imencode(".jpg", img)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     if not ok:
         print(f"[WARN] Gagal encode gambar '{path}', upload tanpa overlay.")
         return _read_image_bytes(path)
     return buf.tobytes()
+
+
+# ============================================================
+# BACKEND: REST API (kirim ke backend tim lain, mis. .NET)
+# ============================================================
+
+def _upload_via_rest_api(plate_number, plate_image_path, plate_captured_at, tag_records: list) -> bool:
+    """
+    Kirim data lewat multipart/form-data ke endpoint upload, SESUAI
+    kontrak yang dikasih tim backend (POST /api/VehicleInspections/upload).
+
+    Field yang dikirim:
+        LicensePlate        : teks nomor plat
+        CapturedAt           : ISO datetime waktu foto plat diambil
+        PlateImage           : file JPEG foto plat (WAJIB oleh API ini)
+        TagsJson              : JSON array metadata semua tag
+        TagImages             : file JPEG, berulang, HANYA utk tag yang punya foto
+        TagImageNumbersJson  : JSON array nomor tag yang cocok urutan TagImages
+    """
+    try:
+        import requests
+    except ImportError:
+        print("[ERROR] Modul 'requests' belum terinstall. Jalankan: pip install requests")
+        return False
+
+    if not plate_image_path or not os.path.exists(plate_image_path):
+        print(
+            f"[ERROR] Foto plat tidak ditemukan ('{plate_image_path}') -- "
+            f"endpoint ini WAJIB menyertakan PlateImage, upload dibatalkan."
+        )
+        return False
+
+    captured_at_str = (
+        plate_captured_at.isoformat() if plate_captured_at else datetime.now().isoformat()
+    )
+    # versi "enak dibaca manusia" khusus buat teks yang di-cap ke gambar
+    # (beda dari captured_at_str yang format ISO, buat field API)
+    captured_at_display = (
+        plate_captured_at.strftime("%Y-%m-%d %H:%M:%S") if plate_captured_at
+        else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+    # susun TagsJson + daftar tag mana saja yang punya foto valid untuk di-upload
+    tags_payload = []
+    tag_images_to_send = []  # list of (tag_num, filepath, duration, time_display)
+    for r in tag_records:
+        raw_time = r.get("time") or ""
+        # format tersimpan di aplikasi: "YYYY-MM-DD HH:MM:SS" (spasi) --
+        # API minta ISO 8601 (huruf "T" sebagai pemisah tanggal/jam).
+        captured_time_iso = raw_time.replace(" ", "T", 1) if raw_time else None
+
+        tags_payload.append({
+            "tagNumber": r.get("tag_num"),
+            "capturedTime": captured_time_iso,
+            "duration": r.get("duration", ""),
+        })
+
+        fp = r.get("filepath")
+        if fp and os.path.exists(fp):
+            tag_images_to_send.append((r.get("tag_num"), fp, r.get("duration", "-"), raw_time or "-"))
+        else:
+            print(f"[WARN] Foto tag #{r.get('tag_num')} tidak ditemukan, dikirim tanpa gambar (NULL).")
+
+    data = {
+        "LicensePlate": plate_number or "TANPA_PLAT",
+        "CapturedAt": captured_at_str,
+        "TagsJson": json.dumps(tags_payload),
+    }
+    if tag_images_to_send:
+        data["TagImageNumbersJson"] = json.dumps([t[0] for t in tag_images_to_send])
+
+    try:
+        # foto plat -- di-cap "Plat: ..." & "Waktu: ..." di pojok kiri atas,
+        # SAMA seperti yang tampil di dialog preview aplikasi (lihat
+        # widgets/page_monitoring.py -- draw_overlay_lines_on_pixmap).
+        plate_image_bytes = _bake_overlay_and_encode(
+            plate_image_path,
+            [f"Plat: {plate_number or 'TANPA_PLAT'}", f"Waktu: {captured_at_display}"],
+            max_dimension=REST_API_CONFIG.get("image_max_dimension"),
+            jpeg_quality=REST_API_CONFIG.get("image_quality", 80),
+        )
+        if plate_image_bytes is None:
+            print(f"[ERROR] Gagal membaca/encode foto plat '{plate_image_path}', upload dibatalkan.")
+            return False
+
+        files = [("PlateImage", (os.path.basename(plate_image_path), plate_image_bytes, "image/jpeg"))]
+
+        for tag_num, fp, duration, time_display in tag_images_to_send:
+            tag_image_bytes = _bake_overlay_and_encode(
+                fp,
+                [
+                    f"Plat: {plate_number or 'TANPA_PLAT'}",
+                    f"Tag: #{tag_num}",
+                    f"Waktu: {time_display}",
+                    f"Durasi: {duration}",
+                ],
+                max_dimension=REST_API_CONFIG.get("image_max_dimension"),
+                jpeg_quality=REST_API_CONFIG.get("image_quality", 80),
+            )
+            if tag_image_bytes is not None:
+                files.append(("TagImages", (os.path.basename(fp), tag_image_bytes, "image/jpeg")))
+
+        resp = requests.post(
+            REST_API_CONFIG["upload_url"],
+            data=data,
+            files=files,
+            timeout=REST_API_CONFIG.get("timeout", 30),
+        )
+
+        if resp.status_code in (200, 201):
+            print(f"[UPLOAD] Berhasil! backend=rest_api, response={resp.text}")
+            return True
+
+        print(f"[ERROR] Upload API gagal -- status={resp.status_code}, body={resp.text}")
+        return False
+
+    except Exception as e:
+        print(f"[ERROR] Upload ke REST API gagal: {e}")
+        return False
 
 
 # ============================================================
@@ -200,8 +337,9 @@ def _bake_overlay_and_encode(path, lines: list):
 
 def upload_records(plate_number: str, plate_image_path, plate_captured_at, tag_records: list) -> bool:
     """
-    Simpan 1 kali verifikasi plat + semua tag yang tertangkap ke database
-    (MySQL / SQL Server / Azure SQL, tergantung DB_BACKEND di db_config.py).
+    Simpan 1 kali verifikasi plat + semua tag yang tertangkap, lewat
+    backend yang aktif (REST API / MySQL / SQL Server / Azure SQL,
+    tergantung DB_BACKEND di db_config.py).
 
     plate_number      : nomor plat yang diverifikasi, mis. "B 1234 ABC"
     plate_image_path  : path file foto plat di disk -- boleh None.
@@ -209,13 +347,17 @@ def upload_records(plate_number: str, plate_image_path, plate_captured_at, tag_r
     tag_records        : list of dict, tiap dict berisi minimal:
                           {"tag_num", "time", "duration", "plate", "filepath"}
 
-    Return True kalau BENAR-BENAR tersimpan, False kalau gagal (driver
-    belum terinstall, server tidak bisa dihubungi, dll). Kalau False, UI
-    (main.py) TIDAK menghapus daftar tag, supaya data aman & bisa dicoba lagi.
+    Return True kalau BENAR-BENAR tersimpan, False kalau gagal (library/
+    driver belum terinstall, server/API tidak bisa dihubungi, dll). Kalau
+    False, UI (main.py) TIDAK menghapus daftar tag, supaya data aman &
+    bisa dicoba lagi.
     """
     if not tag_records:
         print("[UPLOAD] Tidak ada tag untuk diupload, dibatalkan.")
         return False
+
+    if DB_BACKEND == "rest_api":
+        return _upload_via_rest_api(plate_number, plate_image_path, plate_captured_at, tag_records)
 
     ph = _placeholder()
     conn = None

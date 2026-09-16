@@ -6,24 +6,48 @@ SQL Server -> Azure SQL Database, atau sebaliknya). Kode lain
 (widgets/db_client.py, main.py) tidak perlu disentuh sama sekali --
 mereka cuma manggil upload_records() tanpa peduli database-nya apa.
 
-CARA PINDAH DATABASE:
+CARA PINDAH DATABASE / METODE UPLOAD:
     1. Ganti nilai DB_BACKEND di bawah ini ke salah satu:
-           "mysql"      -> MySQL / MariaDB (XAMPP, dsb) -- default sekarang
+           "rest_api"   -> kirim data lewat REST API (backend tim lain,
+                            mis. .NET) -- TIDAK connect database langsung
+           "mysql"      -> MySQL / MariaDB (XAMPP, dsb)
            "sqlserver"  -> Microsoft SQL Server lokal/on-premise
            "azure_sql"  -> Azure SQL Database (cloud)
-    2. Isi konfigurasi koneksi yang sesuai di bagian bawah (host, user,
-       password, dst).
-    3. Install driver Python yang dibutuhkan (lihat komentar tiap
-       backend di bawah).
-    4. Jalankan schema SQL yang sesuai (db/schema.sql untuk MySQL,
-       db/schema_sqlserver.sql untuk SQL Server/Azure SQL).
-    Tidak ada kode lain yang perlu diubah.
+    2. Isi konfigurasi yang sesuai di bagian bawah (URL API, atau
+       host/user/password/dst untuk koneksi database langsung).
+    3. Install driver/library Python yang dibutuhkan (lihat komentar
+       tiap backend di bawah).
+    4. Khusus mysql/sqlserver/azure_sql: jalankan schema SQL yang sesuai
+       (db/schema.sql untuk MySQL, db/schema_sqlserver.sql untuk SQL
+       Server/Azure SQL). Untuk rest_api, database-nya dikelola sendiri
+       oleh tim backend -- tidak perlu jalankan schema apa pun di sini.
+    Tidak ada kode lain (main.py, dst) yang perlu diubah.
 """
 
 # ============================================================
-# GANTI INI SAJA untuk pindah database
+# GANTI INI SAJA untuk pindah database / metode upload
 # ============================================================
-DB_BACKEND = "sqlserver"   # "mysql" | "sqlserver" | "azure_sql"
+DB_BACKEND = "rest_api"   # "mysql" | "sqlserver" | "azure_sql" | "rest_api"
+
+
+# ------------------------------------------------------------
+# 0) REST API (backend .NET/tim lain) -- butuh: pip install requests
+#    Ini BUKAN koneksi database langsung -- data dikirim lewat HTTP
+#    (multipart/form-data) ke endpoint yang sudah disediakan tim backend.
+#    Tidak perlu pymysql/pyodbc/ODBC Driver sama sekali kalau pakai ini.
+# ------------------------------------------------------------
+REST_API_CONFIG = {
+    "upload_url": "http://192.168.1.6:5136/api/VehicleInspections/upload",
+    "timeout": 30,  # detik, batas waktu tunggu respons server
+
+    # Perkecil gambar sebelum dikirim -- berguna kalau server backend
+    # (mis. MySQL di baliknya) menolak dengan error "packet bigger than
+    # max_allowed_packet". Idealnya masalah itu diperbaiki di server
+    # (naikkan max_allowed_packet), tapi ini jaga-jaga dari sisi aplikasi
+    # supaya tetap jalan walau server belum sempat dibenahi.
+    "image_max_dimension": 1280,  # px -- sisi terpanjang gambar, None = ukuran asli
+    "image_quality": 80,           # 0-100, makin kecil makin terkompresi
+}
 
 
 # ------------------------------------------------------------

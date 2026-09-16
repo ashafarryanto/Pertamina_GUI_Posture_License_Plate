@@ -196,15 +196,73 @@ Tekan `Esc` untuk keluar dari mode kios saat testing.
 
 ---
 
-## 🖥️ Deployment ke Perangkat Tertanam (mis. Jetson Nano)
+## 🖥️ Deployment ke Perangkat Tertanam (Jetson)
 
-- Install PyQt5 lewat `apt` (bukan `pip`) di ARM/Jetson untuk hindari
-  compile lama: `sudo apt-get install python3-pyqt5`.
-- Jalankan dengan `python3 main.py --kiosk`.
-- Kalau terasa lag, matikan efek shadow: set `ENABLE_SHADOWS = False` di
-  `widgets/design_tokens.py`.
-- Cek resolusi layar dengan `xrandr`, sesuaikan `MIN_WIDTH`/`MIN_HEIGHT`
-  di `main.py` kalau perlu.
+### ⚠️ Soal hardware: Jetson Nano (2019) vs Jetson Orin Nano
+
+Jetson Nano generasi awal (2019, chip Maxwell) sudah **end-of-life**,
+terkunci di JetPack 4.6 lama, dan sistem ini (2x YOLOv8 + EasyOCR + GUI
+PyQt5) akan **sangat berat** di situ — terutama EasyOCR.
+
+**Rekomendasi: Jetson Orin Nano 8GB** (chip Ampere, ~15-40x lebih
+kencang dari Nano lama). Varian 4GB bisa dipakai tapi RAM-nya pas-pasan
+kalau 2 model + OCR + GUI jalan bergantian.
+
+### Checklist optimasi (urut dari paling berdampak)
+
+1. **Export model ke TensorRT** (dampak paling besar, 3-5x lebih cepat)
+   — WAJIB dijalankan langsung di Jetson-nya, hasil export tidak bisa
+   dipindah dari PC biasa:
+   ```bash
+   yolo export model=detection/model/model.pt format=engine half=True
+   yolo export model=detection/model/yolov8n-pose.pt format=engine half=True
+   ```
+   Lalu ganti `MODEL_PATH` di `anpr_main.py` dan `v6.py` ke file
+   `.engine` hasil export — `ultralytics.YOLO()` otomatis bisa
+   membacanya, tidak perlu ubah kode lain.
+
+2. **Install PyTorch versi resmi NVIDIA**, bukan `pip install torch`
+   biasa (itu tidak teroptimasi CUDA untuk ARM64 Jetson, jalan di CPU
+   meski ada GPU). Install lewat JetPack SDK Manager atau wheel khusus
+   Jetson dari forum NVIDIA (sesuaikan versi JetPack-nya). Cek dengan:
+   ```bash
+   python3 -c "import torch; print(torch.cuda.is_available())"  # harus True
+   ```
+
+3. **Kecilkan resolusi inferensi** — turunkan `IMG_SIZE` di
+   `anpr_main.py` dan `INFER_IMGSZ` di `v6.py` (mis. dari 640 ke 480
+   atau 416), sambil dicek akurasinya masih cukup.
+
+4. **EasyOCR paling berat** — naikkan `OCR_EVERY_N_FRAME` di
+   `anpr_main.py` (mis. dari 2 ke 4-5; akurasi tetap terjaga karena ada
+   voting antar-frame). Kalau masih berat, pertimbangkan ganti ke OCR
+   yang lebih ringan.
+
+5. **Matikan efek shadow UI**: set `ENABLE_SHADOWS = False` di
+   `widgets/design_tokens.py`.
+
+6. **Setup OS Jetson-nya:**
+   - Power mode maksimal: `sudo nvpmodel -m 0`
+   - Pasang kipas aktif (performa maksimal = panas → throttling kalau
+     tanpa pendingin)
+   - Boot & simpan project dari SSD (NVMe/USB3), **bukan microSD** —
+     microSD jadi bottleneck I/O
+   - Tambahkan swap file kalau RAM sering penuh (terutama varian 4GB)
+
+7. **Install PyQt5 lewat `apt`** (bukan `pip`) untuk hindari waktu
+   compile yang lama di ARM:
+   ```bash
+   sudo apt-get install python3-pyqt5
+   ```
+
+8. Jalankan dengan `python3 main.py --kiosk`. Cek resolusi layar dengan
+   `xrandr`, sesuaikan `MIN_WIDTH`/`MIN_HEIGHT` di `main.py` kalau perlu.
+
+> **Catatan desain:** sistem ini sudah dirancang hemat resource dari
+> awal — ANPR dan deteksi Postur sengaja **tidak pernah jalan
+> bersamaan** (cuma 1 model AI aktif dalam satu waktu), jadi beban
+> puncaknya sudah jauh lebih ringan dibanding menjalankan keduanya
+> terus-menerus.
 
 ---
 
